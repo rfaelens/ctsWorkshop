@@ -1,7 +1,7 @@
 ---
 title: "Simulation of popPK models"
 subtitle: Interactive workshop
-output: rmarkdown::html_document
+#output: rmarkdown::slidy_presentation
 runtime: shiny
 resource_files:
 - trapezoidal.jpg
@@ -9,7 +9,8 @@ resource_files:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
-library(RxODE)
+#source("simulationCodeRxODE.R")
+source("simulationCodeMrgsolve.R")
 library(shiny)
 library(ggplot2)
 library(plotly)
@@ -50,16 +51,13 @@ $(document).ready(function() {
 
 * Ruben Faelens
   * Belgian, living in Leuven
-  * Just call me 'Ruben'
 
 * Computer Scientist, graduated 2010
 * PK/PD modeling & simulation from 2012 onward
 * Wrote _simulo_, a clinical trial simulation software
 * Consultant for pharma industry from 2014 - 2018
-
-* Working at *KULeuven* as PhD researcher
-  * MI(MIPD)D: informed development of precision dosing tools
-  * Paving the road towards precision dosing
+* PhD in precision dosing from 2017 - 2022
+* Working at J&J since Feb 2022
 
 ## Simulation of pharmacometric models
 <iframe width="560" height="315" src="https://www.youtube.com/embed/o2ntCRCgpUM" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
@@ -124,21 +122,7 @@ Khosravan et al <footnote>Reza Khosravan et al. Population Pharmacokinetic/Pharm
 # Typical value simulations
 
 ```{r}
-textAreaInput("model", label="Model", value="
-KA=0.126;
-Vc=2700;
-CL=34.1;
-Vp=774;
-Q=0.688;
-TLag = 0.527;
-
-d/dt(A0) = -KA*A0;
-alag(A0) = TLag;
-d/dt(A1) = KA*A0 - CL/Vc * A1 - Q/Vc * A1 + Q/Vp*A2;
-d/dt(A2) = Q/Vc*A1 - Q/Vp*A2;
-CONC = A1 / Vc * 1000;
-d/dt(CAUC) = CONC;
-")
+textAreaInput("model", label="Model", value=tvSimulationModel)
 ```
 
 ----
@@ -157,13 +141,16 @@ inputPanel(
 ```
 
 ```{r typical-value}
+model <- reactive({
+  buildModel(input$model)
+})
 db <- reactiveVal(data.frame())
 renderPlotly({
-  m1 <- RxODE::RxODE(input$model)
-  events <- eventTable() %>%
-    add.dosing(dose=as.numeric(input$dose), nbr.doses=as.numeric(input$nbr.doses), dosing.interval=as.numeric(input$interval)) %>%
-    add.sampling(seq(0, as.numeric(input$observeDays)*24, by=0.1))
-  result <- rxSolve(m1, events=events)
+  result <- simulate(model=model(),
+                     dose=as.numeric(input$dose), 
+                     nbr.doses=as.numeric(input$nbr.doses), 
+                     dosing.interval=as.numeric(input$interval),
+                     observationTimes=seq(0, as.numeric(input$observeDays)*24, by=0.1))
   resultLong <- tidyr::pivot_longer(result, cols=input$plotItems)
   
   dbObj <- isolate({ db() })
@@ -194,18 +181,19 @@ But is that really what would happen for the "typical patient"? Our model is not
 ```{r}
 inputPanel(
   ## 41.7 is too high!!
-  numericInput("residualError", label="RE (CV%)", value=20, min=0, max=300)
+  numericInput("residualError", label="RE (CV%)", value=10, min=0, max=300)
   #re <- qnorm(0.975, sd=as.numeric(input$residualError) / 100)
 )
 ```
 
 ```{r typical-value-re}
 renderPlotly({
-  m1 <- RxODE::RxODE(input$model)
-  events <- eventTable() %>%
-    add.dosing(dose=as.numeric(input$dose), nbr.doses=as.numeric(input$nbr.doses), dosing.interval=as.numeric(input$interval)) %>%
-    add.sampling(seq(0, as.numeric(input$observeDays)*24, by=0.1))
-  result <- rxSolve(m1, events=events)
+  m1 <- model()
+  result <- simulate(model=m1,
+                     dose=as.numeric(input$dose), 
+                     nbr.doses=as.numeric(input$nbr.doses), 
+                     dosing.interval=as.numeric(input$interval),
+                     observationTimes=seq(0, as.numeric(input$observeDays)*24, by=0.1))
   resultLong <- tidyr::pivot_longer(result, cols=input$plotItems)
   re <- qnorm(0.975, sd=as.numeric(input$residualError) / 100)
   z1 <- ggplot(resultLong, aes(x=time, y=value, color=name)) +
@@ -229,21 +217,7 @@ What viewpoint would you defend? What other "errors" may cause residual variabil
 # Population simulation
 
 ```{r}
-textAreaInput("model2", label="Model", value="
-KA=0.126*exp(EKA);
-Vc=2700*exp(EVc);
-CL=34.1*exp(ECL);
-Vp=774;
-Q=0.688;
-TLag = 0.527;
-
-d/dt(A0) = -KA*A0;
-alag(A0) = TLag;
-d/dt(A1) = KA*A0 - CL/Vc * A1 - Q/Vc * A1 + Q/Vp*A2;
-d/dt(A2) = Q/Vc*A1 - Q/Vp*A2;
-CONC = A1 / Vc * 1000;
-d/dt(CAUC) = CONC;
-")
+textAreaInput("model2", label="Model", value=iivModel)
 ```
 
 ----
@@ -254,6 +228,7 @@ These simulations predict a virtual population. Each patient has different ETA v
 inputPanel(
   numericInput("dose2", label="Dose (mg)", value=50),
   numericInput("nbr.doses2", label="Number of doses", value=1),
+  numericInput("interval2", label="Dosing interval", value=24, min=1, max=7*24),
   selectInput("plotItems2", label="plot", choices = c("CONC", "A0", "A1", "A2", "CAUC"), selected="CONC"),
   numericInput("observeDays2", label="Days", value=7),
   numericInput("nSub", label="Subjects", value=50),
@@ -265,17 +240,24 @@ inputPanel(
 ```
 
 ```{r populationSimulation}
+model2 <- reactive({
+  buildModel(input$model2)
+})
 renderPlotly({
-  m1 <- RxODE::RxODE(input$model2)
-  events <- eventTable() %>%
-    add.dosing(dose=as.numeric(input$dose2), nbr.doses=as.numeric(input$nbr.doses2)) %>%
-    add.sampling(seq(0, as.numeric(input$observeDays2)*24, by=1))
+  m1 <- model2()
   omega <- ( c(input$CV_CL, input$CV_Vc, input$CV_KA)/100 ) ^2
   omega <- matrix(c(omega[1], 0, 0, 
            0, omega[2], 0,
            0, 0, omega[3]), nrow=3, dimnames=list(c("ECL", "EVc", "EKA"), c("ECL", "EVc", "EKA")))
+  
+  result <- simulate(m1, 
+                     dose=as.numeric(input$dose2), 
+                     nbr.doses=as.numeric(input$nbr.doses2), 
+                     dosing.interval=as.numeric(input$interval2), 
+                     observationTimes=seq(0, as.numeric(input$observeDays2)*24, by=1), 
+                     omega=omega, nSub=as.numeric(input$nSub))
+  
   #omega <- lotri(ECL + EVc + EKA ~ c(omega[1], 0, omega[2], 0, 0, omega[3]))
-  result <- rxSolve(m1, events=events, omega = omega, nSub=as.numeric(input$nSub))
   # sumstat <- result %>%
   #   group_by(sim.id) %>%
   #   summarize(CMax=max(CONC), CAUC=last(CAUC)) %>%
@@ -315,21 +297,7 @@ Sometimes, differences in production process can lead to slightly altered pharma
 In this model, we reduce clearance by `MOD`.
 
 ```{r}
-textAreaInput("model3", label="Model", value="
-KA=0.126*exp(EKA);
-Vc=2700*exp(EVc);
-CL=34.1*exp(ECL) * MOD;
-Vp=774;
-Q=0.688;
-TLag = 0.527;
-
-d/dt(A0) = -KA*A0;
-alag(A0) = TLag;
-d/dt(A1) = KA*A0 - CL/Vc * A1 - Q/Vc * A1 + Q/Vp*A2;
-d/dt(A2) = Q/Vc*A1 - Q/Vp*A2;
-CONC = A1 / Vc * 1000;
-d/dt(CAUC) = CONC;
-")
+textAreaInput("model3", label="Model", value=iivModelMod)
 ```
 
 ----
@@ -344,17 +312,17 @@ inputPanel(
 ```
 
 ```{r potsSimulation}
+model3 <- reactive({
+  buildModel(input$model3)
+})
 simSteadyState <- function(MOD=as.numeric(input$clMod/100), nSub=1500, times=seq(0, 24, by=0.5), addRE=TRUE) {
-  m1 <- RxODE::RxODE(input$model3)
-  events <- eventTable() %>%
-    add.dosing(dose=50, nbr.doses=31) %>%
-    add.sampling(30*24+times)
   omega <- ( c(24.6, 23, 166)/100 ) ^2
   omega <- matrix(c(omega[1], 0, 0,
            0, omega[2], 0,
            0, 0, omega[3]), nrow=3, dimnames=list(c("ECL", "EVc", "EKA"), c("ECL", "EVc", "EKA")))
-  #omega <- lotri(ECL + EVc + EKA ~ c(omega[1], 0, omega[2], 0, 0, omega[3]))
-  result <- rxSolve(m1, events=events, params=c(MOD=MOD), omega = omega, nSub=nSub)
+  
+  m1 <- model3()
+  result <- simulate(m1, dose=50, nbr.doses=31, dosing.interval=24, observationTimes=30*24+times, omega=omega, nSub=nSub, params=c(MOD=MOD))
   re <- rnorm(nrow(result), sd=as.numeric(input$residualError) / 100)
   if(addRE) result$CONC_RE = result$CONC * (1+re)
   
@@ -362,16 +330,15 @@ simSteadyState <- function(MOD=as.numeric(input$clMod/100), nSub=1500, times=seq
 }
 
 simSingleDose <- function(MOD=as.numeric(input$clMod/100), nSub=1500, times=seq(0, 48, by=0.5), addRE=TRUE) {
-  m1 <- RxODE::RxODE(input$model3)
-  events <- eventTable() %>%
-    add.dosing(dose=50, nbr.doses=1) %>%
-    add.sampling(times)
   omega <- ( c(24.6, 23, 166)/100 ) ^2
   omega <- matrix(c(omega[1], 0, 0,
            0, omega[2], 0,
            0, 0, omega[3]), nrow=3, dimnames=list(c("ECL", "EVc", "EKA"), c("ECL", "EVc", "EKA")))
+  
+  m1 <- model3()
+  result <- simulate(m1, dose=50, nbr.doses=1, dosing.interval=24, observationTimes=times, omega=omega, nSub=nSub, params=c(MOD=MOD))
+  
   #omega <- lotri(ECL + EVc + EKA ~ c(omega[1], 0, omega[2], 0, 0, omega[3]))
-  result <- rxSolve(m1, events=events, params=c(MOD=MOD), omega = omega, nSub=nSub)
   re <- rnorm(nrow(result), sd=as.numeric(input$residualError) / 100)
   if(addRE) result$CONC_RE = result$CONC * (1+re)
   
@@ -406,9 +373,18 @@ renderPlotly({
               upper=quantile(CAvg, (1+level)/2)
               ) %>%
     tidyr::pivot_longer(cols=everything())
-  z1 <- confint(result, "CONC", level=level) %>%
-      plot(ylab="value")
-  z1 + geom_rect(data=Originator, aes(xmin=30*24, xmax=31*24, ymin=value*0.8, ymax=value*1.25, fill=stat), alpha=0.1, inherit.aes = FALSE) +
+  
+  z1 <- ggplot(result, aes(x=time, y=CONC)) +
+    stat_summary(fun.min=~quantile(.x, (1-level)/2),
+                  fun.max=~quantile(.x, (1+level)/2), geom="ribbon", alpha=0.3) +
+    stat_summary(fun="median", geom="line", size=2) +
+    labs(x="Time", y="Concentration")
+  
+  #z1 <- confint(result, "CONC", level=level) %>%
+  #    plot(ylab="value")
+  
+  z1 + geom_rect(data=Originator, aes(xmin=30*24, xmax=31*24, ymin=value*0.8, ymax=value*1.25, fill=stat), color=NA, alpha=0.1, inherit.aes = FALSE) +
+    geom_rect(data=Originator, aes(xmin=30*24, xmax=31*24, ymin=value*0.8, ymax=value*1.25, color=stat), alpha=0.5, fill=NA, inherit.aes = FALSE, linetype=2) +
     coord_cartesian(xlim=c(30, 31)*24) + 
     geom_rug(data=Averages, aes(x=30.5*24, y=value), sides="r") +
     labs(fill="")
@@ -437,7 +413,7 @@ inputPanel(
 )
 ```
 
-```{r}
+```{r label="OptimizeAUC"}
 trapezoid <- function(x, y) {
    sum(  ( y + lag(y) ) / 2 * (x - lag(x) ) , na.rm=TRUE )
 }
@@ -454,12 +430,13 @@ renderPlot({
     mutate(KEEP = (time-30*24) %in% c(0, scheduleDebounced(), 24))
   z1 <- ggplot(result, aes(x=time, y=CONC)) + 
     geom_line(aes(group=sim.id)) + geom_point(data = . %>% filter(KEEP), aes(y=CONC_RE)) +
-    geom_text(aes(x=720, y=CMax*1.2, label=myLabel), data=. %>% filter(KEEP) %>% group_by(sim.id) %>% summarize(
+    geom_text(aes(x=720, y=loc, label=myLabel), data=. %>% filter(KEEP) %>% group_by(sim.id) %>% summarize(
       AUC = max(CAUC)-min(CAUC),
       CMax = max(CONC_RE),
+      loc = max(CONC)*1.2,
       AUCtrap = trapezoid(time, CONC_RE),
       myLabel=paste0("AUCestim=", round(AUCtrap), "\ntrue AUC=",round(AUC))
-        ), hjust=0) +
+        ), hjust=0, vjust=1) +
     facet_wrap(~sim.id) +
     geom_rug(sides = "b")
   z1
@@ -473,55 +450,59 @@ renderPlot({
 
 *Can you optimize the number of blood samples required to characterize CMax after the first dose?*
 
-```{r}
+```{r label="OptimizeCmaxControl"}
 inputPanel(
   selectizeInput("scheduleCmax", label="Schedule", choices=seq(1, 24*2, by=1), selected=seq(1, 24*2, by=1), multiple=TRUE),
   numericInput("seed", label="Random Seed", value=1234)
 )
 ```
 
-```{r}
+```{r label="OptimizeCmaxResult"}
 scheduleCmax <- reactive({
-  as.numeric(input$scheduleCmax)
+  c(0, as.numeric(input$scheduleCmax))
 })
 scheduleCmaxDebounced <- scheduleCmax %>% debounce(1500)
 
+simSingleDoseResult <- reactive({
+  simSingleDose(MOD=1, nSub=4, times=seq(0, 24*2, by=0.1))
+})
 renderPlot({
   set.seed(as.numeric(input$seed))
-  result <- simSingleDose(MOD=1, nSub=4, times=seq(1, 24*2, by=1))
+  result <- simSingleDoseResult()
   resultFilter <- result %>% filter(time %in% scheduleCmaxDebounced())
   
   labels <- result %>% mutate(KEEP = time %in% scheduleCmaxDebounced()) %>% group_by(sim.id) %>%
-    mutate(CMax = max(CONC),
+    mutate(CMax = max(CONC_RE),
+           loc=max(CONC)*1.2,
            CMaxTrial = max(CONC_RE[KEEP]),
            myLabel=paste0("CMax=",round(CMaxTrial),"\ntrue=",round(CMax)))
   
   z1 <- ggplot(result, aes(x=time, y=CONC)) + 
     geom_line(aes(group=sim.id)) + geom_point(data=resultFilter, aes(y=CONC_RE)) +
-    geom_text(aes(x=0, y=CMax*1.2, label=myLabel), data=labels, hjust=0) +
+    geom_text(aes(x=0, y=loc, label=myLabel), data=labels, hjust=0, vjust=1) +
     facet_wrap(~sim.id) +
-    geom_rug(sides = "b")
+    geom_rug(data=resultFilter, sides = "b")
   z1
 })
 ```
 
 
 
-
+----
 
 ## Enrollment
 Every patient costs. Both in terms of money (recruitment, cost of medicine, cost of follow-up), but also in terms of time. The more patients, the longer a trial will take. And time is crucial when patents are only granted for 20 years!
 
 Use clinical trial simulation to show 80 patients is sufficient to demonstrate bio-equivalence.
 
-```{r}
+```{r label="CTSControl"}
 inputPanel(
   numericInput("enrollment", label="Enrollment", value=150),
   actionButton("simulate", "Simulate again!")
 )
 ```
 
-```{r}
+```{r label="CTSSim"}
 renderPlot({
   input$simulate
   
@@ -531,19 +512,19 @@ renderPlot({
   #schedule <- reactive({as.numeric(input$schedule)})
   result <- simSteadyState(MOD=1, nSub=round(N), times=c(0, scheduleDebounced(), 24))
   
-  survival <- data.frame(sim.id=1:N, DIE=runif(round(N)))
-  if(! "SURV" %in% colnames(result)) {
-    result$SURV <- 1
-  }
+  #survival <- data.frame(sim.id=1:N, DIE=runif(round(N)))
+  #if(! "SURV" %in% colnames(result)) {
+  #  result$SURV <- 1
+  #}
   
-  result <- left_join(result, survival) %>%
-      mutate(ALIVE = SURV > DIE )
+  #result <- left_join(result, survival) %>%
+  #    mutate(ALIVE = SURV > DIE )
   
   CMaxEstim <- simSingleDose(MOD=1, nSub=round(N), times=scheduleCmaxDebounced()) %>%
     group_by(sim.id) %>%
-    mutate(CMax = max(CONC_RE))
+    mutate(CMax = max(CONC))
   
-  resultNCA <- result %>% filter(ALIVE) %>%
+  resultNCA <- result %>% #filter(ALIVE) %>%
     group_by(sim.id) %>% 
     summarize(AUC = trapezoid(time, CONC_RE) ) %>% 
     left_join(CMaxEstim) %>% 
@@ -574,14 +555,14 @@ renderPlot({
 # Probability of Study Success
 The probability of study success is determined by performing `many` clinical trial simulations, and checking how many are succesful. This is the probability that a _real_ trial would be succesful.
 
-```{r}
+```{r label="PoSSControl"}
 inputPanel(
   numericInput("trials", label="Simulations", value=1, min=1, max=200),
   actionButton("simulateTrials", "Simulate!")
 )
 ```
 
-```{r}
+```{r label="PoSSSim"}
 useWaitress()
 renderPlot({
   input$simulateTrials
@@ -598,18 +579,18 @@ renderPlot({
       N <- as.numeric(input$enrollment)
       result <- simSteadyState(MOD=1, nSub=round(N), times=c(0, scheduleDebounced(), 24))
       survival <- data.frame(sim.id=1:N, DIE=runif(round(N)))
-      if(! "SURV" %in% colnames(result)) {
-        result$SURV <- 1
-      }
-      result <- left_join(result, survival) %>%
-          mutate(ALIVE = SURV > DIE )
+#      if(! "SURV" %in% colnames(result)) {
+#        result$SURV <- 1
+#      }
+#      result <- left_join(result, survival) %>%
+#          mutate(ALIVE = SURV > DIE )
       
       
       CMaxEstim <- simSingleDose(MOD=1, nSub=round(N), times=scheduleCmaxDebounced()) %>%
         group_by(sim.id) %>%
         mutate(CMax = max(CONC_RE))
   
-      resultNCA <- result %>% filter(ALIVE) %>%
+      resultNCA <- result %>% #filter(ALIVE) %>%
         group_by(sim.id) %>% 
         summarize(AUC = trapezoid(time, CONC_RE) ) %>% 
         left_join(CMaxEstim) %>% 
@@ -631,7 +612,7 @@ renderPlot({
       
     }, .id="TRIAL")
     
-    trialIdMapping <- trials %>% group_by(TRIAL) %>% summarize(n=sum(BioEquivalent)) %>%
+    trialIdMapping <- trials %>% group_by(TRIAL) %>% summarize(n=sum(BioEquivalent)) %>% ## n = number of stats that fit margin
       arrange(n) %>% mutate(i=1:n())
 
     PoSS <- round( sum( trialIdMapping$n == 6 ) / M * 100 )
@@ -643,7 +624,8 @@ renderPlot({
       geom_point(aes(x=value.x, color=BioEquivalent), size=2) +
       facet_wrap(~name, scales="free") +
       labs(x="value", title=paste0("PoSS is ", PoSS, "%")) +
-      scale_color_manual(values=list(`TRUE`="green", `FALSE`="orange"))
+      scale_color_manual(values=list(`TRUE`="green", `FALSE`="orange")) +
+      geom_rect(data=OriginatorStat, aes(ymin=0, ymax=Inf, xmin=value*0.8, xmax=value*1.25), color='grey', fill=NA, alpha=0.4, linetype=2, inherit.aes = FALSE)
       
   })
 })
